@@ -106,8 +106,8 @@ with st.expander("About the data: Faithfulness & Granularity"):
     st.markdown(
         """
 - **Each row is:** one Airbnb listing (an entire home, private room, or shared room) as it appeared on the site in a single snapshot around July 2019. It is not a booking or a host: 37,457 hosts own the 48,895 raw listings, and one operator runs 327 of them.
-- **Scope:** all five NYC boroughs and 221 neighbourhoods at one point in time, so the data can't show seasonal or year-over-year changes. `price` is the host's asking nightly price, not what guests actually paid (no cleaning fees or discounts). After cleaning, the dashboard covers 47,924 short-term listings (minimum stay of 30 nights or fewer) priced $1–$1,000.
-- **Strange values / duplicates we handled:** we removed 11 listings priced at $0, 239 listings over $1,000/night (up to $10,000), and 747 listings requiring stays over 30 nights (up to 1,250), which are monthly rentals rather than short stays. There were no duplicate listings. We dropped the review columns: 20.6% of listings have never been reviewed, and those listings are pricier on average, so dropping the *rows* instead would have biased prices downward.
+- **Scope:** all five NYC boroughs and 221 neighbourhoods at one point in time, so the data can't show seasonal or year-over-year changes. `price` is the host's asking nightly price, not what guests actually paid (no cleaning fees or discounts). After cleaning, the dashboard covers 47,924 short-term listings (minimum stay of 30 nights or fewer) priced \\$1–\\$1,000.
+- **Strange values / duplicates we handled:** we removed 11 listings priced at \\$0, 239 listings over \\$1,000/night (up to \\$10,000), and 747 listings requiring stays over 30 nights (up to 1,250), which are monthly rentals rather than short stays. There were no duplicate listings. We dropped the review columns: 20.6% of listings have never been reviewed, and those listings are pricier on average, so dropping the *rows* instead would have biased prices downward.
 """
     )
 
@@ -137,8 +137,8 @@ with right:
     ax.set(title="Nightly price distribution", xlabel="Price ($)")
     st.pyplot(fig)
     st.caption(
-        "Prices are strongly right-skewed: the middle half of listings costs $69–$175 a night, but a long tail "
-        "stretches to $1,000, which pulls the mean above the median."
+        "Prices are strongly right-skewed: the middle half of listings costs \\$69–\\$175 a night, but a long tail "
+        "stretches to \\$1,000, which pulls the mean above the median."
     )
 
 left, right = st.columns(2)
@@ -201,9 +201,9 @@ mae_numeric, mae_full = results.loc["OLS: numeric only", "MAE"], results.loc["OL
 top_fifth = test[test[TARGET] >= test[TARGET].quantile(0.8)]
 st.markdown(
     f"""
-- **Coefficient interpretation:** listings in Manhattan are predicted to cost about **${manhattan:,.0f} more** per night than listings in the {reference['neighbourhood_group']}, holding the other features constant. A private room is predicted to cost about **${abs(private):,.0f} less** than an {reference['room_type'].lower()}, so room type moves price more than any borough does.
-- **Did one-hot encoding help?** Yes. Without borough and room type, the model barely beats always guessing the average (RMSE ${rmse_numeric:,.2f} vs. ${results.loc['Constant (train mean)', 'RMSE']:,.2f}). Adding them cuts RMSE to ${rmse_full:,.2f} ({(rmse_full - rmse_numeric) / rmse_numeric:.0%}) and MAE from ${mae_numeric:,.2f} to ${mae_full:,.2f} ({(mae_full - mae_numeric) / mae_numeric:.0%}).
-- **Evaluation observation:** the model **underpredicts at the high end**. For the most expensive fifth of test listings, it predicts about ${(top_fifth[TARGET] - top_fifth['predicted']).mean():,.0f} below the actual price on average, and its highest prediction is only ${test['predicted'].max():,.0f}, while real prices reach ${test[TARGET].max():,.0f}. It also overpredicts the cheapest listings.
+- **Coefficient interpretation:** listings in Manhattan are predicted to cost about **\\${manhattan:,.0f} more** per night than listings in the {reference['neighbourhood_group']}, holding the other features constant. A private room is predicted to cost about **\\${abs(private):,.0f} less** than an {reference['room_type'].lower()}, so room type moves price more than any borough does.
+- **Did one-hot encoding help?** Yes. Without borough and room type, the model barely beats always guessing the average (RMSE \\${rmse_numeric:,.2f} vs. \\${results.loc['Constant (train mean)', 'RMSE']:,.2f}). Adding them cuts RMSE to \\${rmse_full:,.2f} ({(rmse_full - rmse_numeric) / rmse_numeric:.0%}) and MAE from \\${mae_numeric:,.2f} to \\${mae_full:,.2f} ({(mae_full - mae_numeric) / mae_numeric:.0%}).
+- **Evaluation observation:** the model **underpredicts at the high end**. For the most expensive fifth of test listings, it predicts about \\${(top_fifth[TARGET] - top_fifth['predicted']).mean():,.0f} below the actual price on average, and its highest prediction is only \\${test['predicted'].max():,.0f}, while real prices reach \\${test[TARGET].max():,.0f}. It also overpredicts the cheapest listings.
 """
 )
 
@@ -253,16 +253,16 @@ with output:
     else:
         st.caption(
             f"For comparison: {len(similar):,} {my_room_type.lower()} listing(s) in {my_neighbourhood}, "
-            f"median ${similar.median():,.0f} a night."
+            f"median \\${similar.median():,.0f} a night."
         )
     st.caption(
-        f"Typical error is about ±${pricer_rmse:,.0f} (test RMSE). Like the model above, it underprices high-end "
+        f"Typical error is about ±\\${pricer_rmse:,.0f} (test RMSE). Like the model above, it underprices high-end "
         "listings, and neighbourhoods with only a handful of listings give noisy estimates."
     )
 
 st.header("Takeaway")
 st.markdown(
-    f"**Room type is the biggest lever on an NYC Airbnb's price, and location is the second.** An entire home costs "
-    f"roughly twice as much as a private room in every borough. For the same room type, Manhattan adds about "
-    f"${manhattan:,.0f} a night over the Bronx. Details like minimum stay and availability barely move the price."
+    f"**Room type is the biggest factor on an NYC Airbnb's price, and location is the second.** An entire home costs "
+    f"twice as much as a private room in every borough. For the same room type, Manhattan adds about "
+    f"\\${manhattan:,.0f} a night over the Bronx. Details like minimum stay and availability barely move the price."
 )
