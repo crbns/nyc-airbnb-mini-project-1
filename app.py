@@ -77,14 +77,20 @@ if not CLEAN_CSV.exists():
     st.stop()
 
 df = pd.read_csv(CLEAN_CSV)
+all_boroughs = sorted(df["neighbourhood_group"].unique())
+
+st.html(
+    """<style>
+    .st-key-viz_description p, .st-key-viz_description li { font-size: 1.2rem; line-height: 1.6; }
+    </style>"""
+)
 
 st.title("NYC Airbnb Prices")
 st.markdown("**Central question:** How much do borough and room type drive the nightly price of an NYC Airbnb?")
 
 st.sidebar.header("Filters")
-boroughs = st.sidebar.multiselect(
-    "Borough", sorted(df["neighbourhood_group"].unique()), default=sorted(df["neighbourhood_group"].unique())
-)
+st.sidebar.caption("These filters apply to the Overview, By borough and Visualizations tabs. The model tabs always use every listing.")
+boroughs = st.sidebar.multiselect("Borough", all_boroughs, default=all_boroughs)
 room_type = st.sidebar.selectbox("Room type", ["All", *sorted(df["room_type"].unique())])
 price_range = st.sidebar.slider("Nightly price ($)", int(df["price"].min()), int(df["price"].max()), (int(df["price"].min()), 500))
 
@@ -92,17 +98,43 @@ view = df[df["neighbourhood_group"].isin(boroughs) & df["price"].between(*price_
 if room_type != "All":
     view = view[view["room_type"] == room_type]
 
-if view.empty:
-    st.warning("No listings match these filters.")
-    st.stop()
+if not boroughs:
+    borough_scope = "no boroughs"
+elif len(boroughs) == len(all_boroughs):
+    borough_scope = "all 5 boroughs combined"
+elif len(boroughs) == 1:
+    borough_scope = f"{boroughs[0]} only"
+else:
+    borough_scope = f"{', '.join(boroughs[:-1])} and {boroughs[-1]} combined"
+room_scope = "all room types" if room_type == "All" else f"{room_type.lower()}s only"
+scope = f"{borough_scope}, {room_scope}, nightly prices \\${price_range[0]:,}–\\${price_range[1]:,}"
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Listings", f"{len(view):,}")
-c2.metric("Median price", f"${view['price'].median():,.0f}")
-c3.metric("Mean price", f"${view['price'].mean():,.0f}")
-c4.metric("Median 7-night stay", f"${view['price_per_week'].median():,.0f}")
+model = fit_models(df)
+coefs, reference = model["coefs"], model["reference"]
+results = model["results"].set_index("model")
+manhattan = coefs["neighbourhood_group_Manhattan"]
+private = coefs["room_type_Private room"]
 
-with st.expander("About the data: Faithfulness & Granularity"):
+overview_tab, borough_tab, viz_tab, model_tab, pricer_tab, takeaway_tab = st.tabs(
+    ["Overview", "By borough", "Visualizations", "Model", "Price your listing", "Takeaway"]
+)
+
+with overview_tab:
+    if view.empty:
+        st.warning("No listings match these filters.")
+    else:
+        st.markdown(f"**Scope of these numbers:** {scope}. Change the scope with the sidebar filters.")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Listings", f"{len(view):,}")
+        c2.metric("Median nightly price", f"${view['price'].median():,.0f}")
+        c3.metric("Mean nightly price", f"${view['price'].mean():,.0f}")
+        c4.metric("Median 7-night stay", f"${view['price_per_week'].median():,.0f}")
+        st.caption(
+            "Each figure pools every listing in the scope above into one number, so with several boroughs selected it is "
+            "not the figure for any single borough. The By borough tab gives each borough's own numbers."
+        )
+
+    st.subheader("About the data: Faithfulness & Granularity")
     st.markdown(
         """
 - **Each row is:** one Airbnb listing (an entire home, private room, or shared room) as it appeared on the site in a single snapshot around July 2019. It is not a booking or a host: 37,457 hosts own the 48,895 raw listings, and one operator runs 327 of them.
@@ -111,158 +143,206 @@ with st.expander("About the data: Faithfulness & Granularity"):
 """
     )
 
-st.header("Price by borough and room type")
-st.dataframe(view.groupby(["neighbourhood_group", "room_type"])["price"].agg(["count", "median", "mean"]).round(1))
-st.caption(
-    "In every borough an entire home has about twice the median price of a private room, and Manhattan is the most "
-    "expensive borough for every room type. Medians are the fairer summary here: a few expensive listings pull every mean up."
-)
+with borough_tab:
+    st.header("Price by borough and room type")
+    if view.empty:
+        st.warning("No listings match these filters.")
+    else:
+        st.markdown(
+            f"One table per borough, each covering only that borough's listings ({room_scope}, nightly prices "
+            f"\\${price_range[0]:,}–\\${price_range[1]:,}). In every borough an entire home has about twice the median "
+            "price of a private room, and Manhattan is the most expensive borough for every room type. Medians are the "
+            "fairer summary here: a few expensive listings pull every mean up."
+        )
+        by_borough = view.groupby(["neighbourhood_group", "room_type"]).agg(
+            listings=("price", "count"),
+            median_price=("price", "median"),
+            mean_price=("price", "mean"),
+            median_7_night_stay=("price_per_week", "median"),
+        ).round(1)
+        with st.expander("How these tables were built"):
+            st.code(
+                'view.groupby(["neighbourhood_group", "room_type"]).agg(\n'
+                '    listings=("price", "count"),\n'
+                '    median_price=("price", "median"),\n'
+                '    mean_price=("price", "mean"),\n'
+                '    median_7_night_stay=("price_per_week", "median"),\n'
+                ")",
+                language="python",
+            )
+            st.caption("The grouped result is then split by its borough level, one table per borough.")
 
-st.header("Explore")
-left, right = st.columns(2)
+        column_config = {
+            "listings": st.column_config.NumberColumn("Listings", format="%d"),
+            "median_price": st.column_config.NumberColumn("Median nightly price", format="$%.0f"),
+            "mean_price": st.column_config.NumberColumn("Mean nightly price", format="$%.0f"),
+            "median_7_night_stay": st.column_config.NumberColumn("Median 7-night stay", format="$%.0f"),
+        }
+        for i, (borough, table) in enumerate(by_borough.groupby(level="neighbourhood_group")):
+            if i % 2 == 0:
+                cols = st.columns(2)
+            borough_view = view[view["neighbourhood_group"] == borough]
+            with cols[i % 2]:
+                st.subheader(borough)
+                st.caption(
+                    f"{len(borough_view):,} listings · median \\${borough_view['price'].median():,.0f} a night · "
+                    f"median 7-night stay \\${borough_view['price_per_week'].median():,.0f}"
+                )
+                st.dataframe(
+                    table.droplevel("neighbourhood_group").rename_axis("Room type"),
+                    column_config=column_config,
+                )
 
-with left:
-    fig, ax = plt.subplots(figsize=(6, 4))
-    sns.countplot(data=view, x="neighbourhood_group", hue="room_type", ax=ax)
-    ax.set(title="Listings by borough and room type", xlabel="Borough", ylabel="Listings")
-    st.pyplot(fig)
-    st.caption(
-        "Manhattan and Brooklyn hold about 85% of all listings. Entire homes and private rooms split the market "
-        "almost evenly; shared rooms are only about 2%."
+with viz_tab:
+    st.header("Visualizations")
+    if view.empty:
+        st.warning("No listings match these filters.")
+    else:
+        chart = st.selectbox(
+            "Choose a visualization",
+            ["Listings by borough and room type", "Nightly price distribution", "Map of listing prices", "Correlation between numeric features"],
+        )
+        st.caption(f"Showing {len(view):,} listings: {scope}.")
+        plot_col, text_col = st.columns([3, 2], gap="large")
+
+        with plot_col:
+            if chart == "Listings by borough and room type":
+                fig, ax = plt.subplots(figsize=(7, 4.5))
+                sns.countplot(data=view, x="neighbourhood_group", hue="room_type", ax=ax)
+                ax.set(title="Listings by borough and room type", xlabel="Borough", ylabel="Listings")
+                description = (
+                    "Manhattan and Brooklyn hold about 85% of all listings. Entire homes and private rooms split the "
+                    "market almost evenly; shared rooms are only about 2%."
+                )
+            elif chart == "Nightly price distribution":
+                fig, ax = plt.subplots(figsize=(7, 4.5))
+                sns.histplot(view["price"], bins=50, ax=ax)
+                ax.set(title="Nightly price distribution", xlabel="Price ($)")
+                description = (
+                    "Prices are strongly right-skewed: the middle half of listings costs \\$69–\\$175 a night, but a "
+                    "long tail stretches to \\$1,000, which pulls the mean above the median."
+                )
+            elif chart == "Map of listing prices":
+                fig, ax = plt.subplots(figsize=(7, 6))
+                sc = ax.scatter(view["longitude"], view["latitude"], c=view["log_price"], s=2, alpha=0.5, cmap="viridis")
+                fig.colorbar(sc, ax=ax, label="log(price)")
+                ax.set(title="Where are the expensive listings?", xlabel="Longitude", ylabel="Latitude")
+                description = (
+                    "The priciest listings cluster in Manhattan, especially Midtown, Hell's Kitchen and the Upper West "
+                    "Side, plus Williamsburg in Brooklyn. Location is a big part of the price story."
+                )
+            else:
+                num_cols = ["price", "neighbourhood_median_price", "minimum_nights", "calculated_host_listings_count", "availability_365"]
+                fig, ax = plt.subplots(figsize=(7, 6))
+                sns.heatmap(view[num_cols].corr(), annot=True, fmt=".2f", cmap="coolwarm", center=0, ax=ax)
+                ax.set_title("Correlation between numeric features")
+                description = (
+                    "Minimum nights, availability and host listing count barely relate to price (|r| ≤ 0.13). Only the "
+                    "neighbourhood median price does, which again points to location and room type as the real drivers."
+                )
+            st.pyplot(fig)
+
+        with text_col:
+            with st.container(key="viz_description"):
+                st.markdown(f"**What it shows**\n\n{description}")
+
+with model_tab:
+    st.header("Predicting price")
+    st.markdown(
+        f"Trained on every listing across all 5 boroughs, regardless of the sidebar filters. "
+        f"80/20 random train/test split ({model['n_train']:,} train rows). "
+        f"Reference levels (dropped): **{reference['neighbourhood_group']}** borough, "
+        f"**{reference['room_type']}** room type."
     )
 
-with right:
-    fig, ax = plt.subplots(figsize=(6, 4))
-    sns.histplot(view["price"], bins=50, ax=ax)
-    ax.set(title="Nightly price distribution", xlabel="Price ($)")
-    st.pyplot(fig)
-    st.caption(
-        "Prices are strongly right-skewed: the middle half of listings costs \\$69–\\$175 a night, but a long tail "
-        "stretches to \\$1,000, which pulls the mean above the median."
-    )
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Test error")
+        st.dataframe(model["results"], hide_index=True)
+        st.subheader("OLS coefficients")
+        st.dataframe(coefs.rename("coefficient"))
 
-left, right = st.columns(2)
+    with right:
+        test = model["test"]
+        color_by = st.radio("Color predictions by", CATEGORICAL, horizontal=True)
+        fig, ax = plt.subplots(figsize=(6, 6))
+        sns.scatterplot(data=test, x=TARGET, y="predicted", hue=color_by, s=8, alpha=0.4, ax=ax)
+        lims = [min(test[TARGET].min(), test["predicted"].min()), max(test[TARGET].max(), test["predicted"].max())]
+        ax.plot(lims, lims, "r--", label="perfect prediction")
+        ax.set(xlabel=f"Actual {TARGET}", ylabel=f"Predicted {TARGET}", title="Predicted vs. actual (test set)")
+        ax.legend(fontsize="small")
+        st.pyplot(fig)
 
-with left:
-    fig, ax = plt.subplots(figsize=(6, 5))
-    sc = ax.scatter(view["longitude"], view["latitude"], c=view["log_price"], s=2, alpha=0.5, cmap="viridis")
-    fig.colorbar(sc, ax=ax, label="log(price)")
-    ax.set(title="Where are the expensive listings?", xlabel="Longitude", ylabel="Latitude")
-    st.pyplot(fig)
-    st.caption(
-        "The priciest listings cluster in Manhattan, especially Midtown, Hell's Kitchen and the Upper West Side, "
-        "plus Williamsburg in Brooklyn. Location is a big part of the price story."
-    )
-
-with right:
-    num_cols = ["price", "neighbourhood_median_price", "minimum_nights", "calculated_host_listings_count", "availability_365"]
-    fig, ax = plt.subplots(figsize=(6, 5))
-    sns.heatmap(view[num_cols].corr(), annot=True, fmt=".2f", cmap="coolwarm", center=0, ax=ax)
-    ax.set_title("Correlation between numeric features")
-    st.pyplot(fig)
-    st.caption(
-        "Minimum nights, availability and host listing count barely relate to price (|r| ≤ 0.13). Only the "
-        "neighbourhood median price does, which again points to location and room type as the real drivers."
-    )
-
-st.header("Predicting price")
-model = fit_models(df)
-coefs, reference = model["coefs"], model["reference"]
-results = model["results"].set_index("model")
-
-st.markdown(
-    f"80/20 random train/test split ({model['n_train']:,} train rows). "
-    f"Reference levels (dropped): **{reference['neighbourhood_group']}** borough, "
-    f"**{reference['room_type']}** room type."
-)
-
-left, right = st.columns(2)
-with left:
-    st.subheader("Test error")
-    st.dataframe(model["results"], hide_index=True)
-    st.subheader("OLS coefficients")
-    st.dataframe(coefs.rename("coefficient"))
-
-with right:
-    test = model["test"]
-    color_by = st.radio("Color predictions by", CATEGORICAL, horizontal=True)
-    fig, ax = plt.subplots(figsize=(6, 6))
-    sns.scatterplot(data=test, x=TARGET, y="predicted", hue=color_by, s=8, alpha=0.4, ax=ax)
-    lims = [min(test[TARGET].min(), test["predicted"].min()), max(test[TARGET].max(), test["predicted"].max())]
-    ax.plot(lims, lims, "r--", label="perfect prediction")
-    ax.set(xlabel=f"Actual {TARGET}", ylabel=f"Predicted {TARGET}", title="Predicted vs. actual (test set)")
-    ax.legend(fontsize="small")
-    st.pyplot(fig)
-
-manhattan = coefs["neighbourhood_group_Manhattan"]
-private = coefs["room_type_Private room"]
-rmse_numeric, rmse_full = results.loc["OLS: numeric only", "RMSE"], results.loc["OLS: numeric + one-hot", "RMSE"]
-mae_numeric, mae_full = results.loc["OLS: numeric only", "MAE"], results.loc["OLS: numeric + one-hot", "MAE"]
-top_fifth = test[test[TARGET] >= test[TARGET].quantile(0.8)]
-st.markdown(
-    f"""
+    rmse_numeric, rmse_full = results.loc["OLS: numeric only", "RMSE"], results.loc["OLS: numeric + one-hot", "RMSE"]
+    mae_numeric, mae_full = results.loc["OLS: numeric only", "MAE"], results.loc["OLS: numeric + one-hot", "MAE"]
+    top_fifth = test[test[TARGET] >= test[TARGET].quantile(0.8)]
+    st.markdown(
+        f"""
 - **Coefficient interpretation:** listings in Manhattan are predicted to cost about **\\${manhattan:,.0f} more** per night than listings in the {reference['neighbourhood_group']}, holding the other features constant. A private room is predicted to cost about **\\${abs(private):,.0f} less** than an {reference['room_type'].lower()}, so room type moves price more than any borough does.
 - **Did one-hot encoding help?** Yes. Without borough and room type, the model barely beats always guessing the average (RMSE \\${rmse_numeric:,.2f} vs. \\${results.loc['Constant (train mean)', 'RMSE']:,.2f}). Adding them cuts RMSE to \\${rmse_full:,.2f} ({(rmse_full - rmse_numeric) / rmse_numeric:.0%}) and MAE from \\${mae_numeric:,.2f} to \\${mae_full:,.2f} ({(mae_full - mae_numeric) / mae_numeric:.0%}).
 - **Evaluation observation:** the model **underpredicts at the high end**. For the most expensive fifth of test listings, it predicts about \\${(top_fifth[TARGET] - top_fifth['predicted']).mean():,.0f} below the actual price on average, and its highest prediction is only \\${test['predicted'].max():,.0f}, while real prices reach \\${test[TARGET].max():,.0f}. It also overpredicts the cheapest listings.
 """
-)
-
-st.header("What should I charge?")
-st.markdown(
-    "Describe your listing and a linear regression model suggests a nightly price based on similar NYC listings. "
-    "The model's pipeline standardises the numeric inputs and one-hot encodes neighbourhood and room type."
-)
-pricer, pricer_rmse = fit_pricer(df)
-rare_neighbourhoods = set(pricer.named_steps["preprocess"].named_transformers_["cat"].infrequent_categories_[0])
-neighbourhoods = df.groupby("neighbourhood")["neighbourhood_group"].first().sort_index()
-
-inputs, output = st.columns(2)
-with inputs:
-    my_neighbourhood = st.selectbox(
-        "Neighbourhood",
-        neighbourhoods.index,
-        index=neighbourhoods.index.get_loc(df["neighbourhood"].mode()[0]),
-        format_func=lambda n: f"{n} ({neighbourhoods[n]})",
     )
-    my_room_type = st.selectbox("Room type", sorted(df["room_type"].unique()), key="pricer_room_type")
-    my_availability = st.slider("Nights available per year", 0, 365, 180)
-    my_min_nights = st.slider("Minimum nights", 1, 30, 2)
 
-with output:
-    listing = pd.DataFrame([{
-        "neighbourhood": my_neighbourhood,
-        "room_type": my_room_type,
-        "availability_365": my_availability,
-        "minimum_nights": my_min_nights,
-    }])
-    suggested = pricer.predict(listing)[0]
-    m1, m2 = st.columns(2)
-    m1.metric("Suggested nightly price", f"${suggested:,.0f}")
-    m2.metric("7-night stay", f"${suggested * 7:,.0f}")
-    if suggested <= 0:
-        st.warning("The model predicts no positive price for this combination; there's too little similar data to trust it.")
-    if my_neighbourhood in rare_neighbourhoods:
-        st.info(
-            f"{my_neighbourhood} has fewer than {MIN_LISTINGS} listings in the training data, so the model groups it "
-            "with other small neighbourhoods instead of estimating it on its own."
+with pricer_tab:
+    st.header("What should I charge?")
+    st.markdown(
+        "Describe your listing and a linear regression model suggests a nightly price based on similar NYC listings. "
+        "The model's pipeline standardises the numeric inputs and one-hot encodes neighbourhood and room type."
+    )
+    pricer, pricer_rmse = fit_pricer(df)
+    rare_neighbourhoods = set(pricer.named_steps["preprocess"].named_transformers_["cat"].infrequent_categories_[0])
+    neighbourhoods = df.groupby("neighbourhood")["neighbourhood_group"].first().sort_index()
+
+    inputs, output = st.columns(2)
+    with inputs:
+        my_neighbourhood = st.selectbox(
+            "Neighbourhood",
+            neighbourhoods.index,
+            index=neighbourhoods.index.get_loc(df["neighbourhood"].mode()[0]),
+            format_func=lambda n: f"{n} ({neighbourhoods[n]})",
         )
+        my_room_type = st.selectbox("Room type", sorted(df["room_type"].unique()), key="pricer_room_type")
+        my_availability = st.slider("Nights available per year", 0, 365, 180)
+        my_min_nights = st.slider("Minimum nights", 1, 30, 2)
 
-    similar = df.loc[(df["neighbourhood"] == my_neighbourhood) & (df["room_type"] == my_room_type), "price"]
-    if similar.empty:
-        st.caption(f"There are no {my_room_type.lower()} listings in {my_neighbourhood} in the data, so treat this estimate with caution.")
-    else:
+    with output:
+        listing = pd.DataFrame([{
+            "neighbourhood": my_neighbourhood,
+            "room_type": my_room_type,
+            "availability_365": my_availability,
+            "minimum_nights": my_min_nights,
+        }])
+        suggested = pricer.predict(listing)[0]
+        m1, m2 = st.columns(2)
+        m1.metric("Suggested nightly price", f"${suggested:,.0f}")
+        m2.metric("7-night stay", f"${suggested * 7:,.0f}")
+        st.caption(f"For a {my_room_type.lower()} in {my_neighbourhood}, {neighbourhoods[my_neighbourhood]}.")
+        if suggested <= 0:
+            st.warning("The model predicts no positive price for this combination; there's too little similar data to trust it.")
+        if my_neighbourhood in rare_neighbourhoods:
+            st.info(
+                f"{my_neighbourhood} has fewer than {MIN_LISTINGS} listings in the training data, so the model groups it "
+                "with other small neighbourhoods instead of estimating it on its own."
+            )
+
+        similar = df.loc[(df["neighbourhood"] == my_neighbourhood) & (df["room_type"] == my_room_type), "price"]
+        if similar.empty:
+            st.caption(f"There are no {my_room_type.lower()} listings in {my_neighbourhood} in the data, so treat this estimate with caution.")
+        else:
+            st.caption(
+                f"For comparison: {len(similar):,} {my_room_type.lower()} listing(s) in {my_neighbourhood}, "
+                f"median \\${similar.median():,.0f} a night."
+            )
         st.caption(
-            f"For comparison: {len(similar):,} {my_room_type.lower()} listing(s) in {my_neighbourhood}, "
-            f"median \\${similar.median():,.0f} a night."
+            f"Typical error is about ±\\${pricer_rmse:,.0f} (test RMSE). Like the model on the Model tab, it underprices "
+            "high-end listings, and neighbourhoods with only a handful of listings give noisy estimates."
         )
-    st.caption(
-        f"Typical error is about ±\\${pricer_rmse:,.0f} (test RMSE). Like the model above, it underprices high-end "
-        "listings, and neighbourhoods with only a handful of listings give noisy estimates."
-    )
 
-st.header("Takeaway")
-st.markdown(
-    f"**Room type is the biggest factor on an NYC Airbnb's price, and location is the second.** An entire home costs "
-    f"twice as much as a private room in every borough. For the same room type, Manhattan adds about "
-    f"\\${manhattan:,.0f} a night over the Bronx. Details like minimum stay and availability barely move the price."
-)
+with takeaway_tab:
+    st.header("Takeaway")
+    st.markdown(
+        f"**Room type is the biggest factor on an NYC Airbnb's price, and location is the second.** An entire home costs "
+        f"twice as much as a private room in every borough. For the same room type, Manhattan adds about "
+        f"\\${manhattan:,.0f} a night over the Bronx. Details like minimum stay and availability barely move the price."
+    )
